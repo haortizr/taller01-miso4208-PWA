@@ -8,7 +8,8 @@
         spinner: document.querySelector('.loader'),
         cardTemplate: document.querySelector('.cardTemplate'),
         container: document.querySelector('.main'),
-        addDialog: document.querySelector('.dialog-container')
+        addDialog: document.querySelector('.dialog-container'),
+        indexedDBName: "SchedulesDB"
     };
 
 
@@ -29,8 +30,6 @@
     });
 
     document.getElementById('butAddCity').addEventListener('click', function () {
-
-
         var select = document.getElementById('selectTimetableToAdd');
         var selected = select.options[select.selectedIndex];
         var key = selected.value;
@@ -39,7 +38,8 @@
             app.selectedTimetables = [];
         }
         app.getSchedule(key, label);
-        app.selectedTimetables.push({key: key, label: label});
+        app.selectedTimetables.push({ key: key, label: label });
+        app.saveSelectedTimetables();
         app.toggleAddDialog(false);
     });
 
@@ -88,15 +88,16 @@
         card.querySelector('.card-last-updated').textContent = data.created;
 
         var scheduleUIs = card.querySelectorAll('.schedule');
-        for(var i = 0; i<4; i++) {
+        for (var i = 0; i < 4; i++) {
             var schedule = schedules[i];
             var scheduleUI = scheduleUIs[i];
-            if(schedule && scheduleUI) {
+            if (schedule && scheduleUI) {
                 scheduleUI.querySelector('.message').textContent = schedule.message;
             }
         }
 
         if (app.isLoading) {
+            window.cardLoadTime = performance.now();
             app.spinner.setAttribute('hidden', true);
             app.container.removeAttribute('hidden');
             app.isLoading = false;
@@ -113,10 +114,30 @@
     app.getSchedule = function (key, label) {
         var url = 'https://api-ratp.pierre-grimaud.fr/v3/schedules/' + key;
 
+        if ('caches' in window) {
+            /*
+             * Check if the service worker has already cached this city's weather
+             * data. If the service worker has the data, then display the cached
+             * data while the app fetches the latest data.
+             */
+            caches.match(url).then(function (response) {
+                if (response) {
+                    response.json().then(function updateFromCache(json) {
+                        var results = json.result;
+                        results.key = key;
+                        results.label = label;
+                        results.created = json._metadata.date;
+                        app.updateTimetableCard(results);
+                    });
+                }
+            });
+        }
+
         var request = new XMLHttpRequest();
         request.onreadystatechange = function () {
             if (request.readyState === XMLHttpRequest.DONE) {
                 if (request.status === 200) {
+                    window.APILoadtime  = performance.now();
                     var response = JSON.parse(request.response);
                     var result = {};
                     result.key = key;
@@ -168,20 +189,66 @@
 
     };
 
+    app.saveSelectedTimetables = function () {
+        if (!('indexedDB' in window)) {
+            var selectedTimetables = JSON.stringify(app.selectedTimetables);
+            localStorage.selectedTimetables = selectedTimetables;
+        } else {
+            var request = window.indexedDB.open(app.indexedDBName, 1);
+            request.onerror = function (event) {
+                console.log(event);
+            };
+            request.onsuccess = function (event) {
+                var db = event.target.result;
+                var timetableObjectStore = db.transaction("timetables", "readwrite").objectStore("timetables");
+                app.selectedTimetables.forEach(function (timetable) {
+                    timetableObjectStore.put(timetable);
+                });
+            };
+        }
+    };
 
-    /************************************************************************
-     *
-     * Code required to start the app
-     *
-     * NOTE: To simplify this codelab, we've used localStorage.
-     *   localStorage is a synchronous API and has serious performance
-     *   implications. It should not be used in production applications!
-     *   Instead, check out IDB (https://www.npmjs.com/package/idb) or
-     *   SimpleDB (https://gist.github.com/inexorabletash/c8069c042b734519680c)
-     ************************************************************************/
+    app.initStorage = function (selectedTimetables) {
+        app.selectedTimetables = typeof app.selectedTimetables == 'string' ? JSON.parse(app.selectedTimetables) : selectedTimetables;
+        if (app.selectedTimetables && app.selectedTimetables.length > 0) {
+            app.selectedTimetables = typeof app.selectedTimetables == 'string' ? JSON.parse(app.selectedTimetables) : selectedTimetables;
+            app.selectedTimetables.forEach(function (timetable) {
+                app.getSchedule(timetable.key, timetable.label);
+            });
+        } else {
+            app.updateTimetableCard(initialStationTimetable);
+            app.getSchedule(initialStationTimetable.key, initialStationTimetable.label);
+            app.selectedTimetables = [
+                { key: initialStationTimetable.key, label: initialStationTimetable.label }
+            ];
+            app.saveSelectedTimetables();
+        }
+    };
 
-    app.getSchedule('metros/1/bastille/A', 'Bastille, Direction La Défense');
-    app.selectedTimetables = [
-        {key: initialStationTimetable.key, label: initialStationTimetable.label}
-    ];
+    if (!('indexedDB' in window)) {
+        app.initStorage(localStorage.selectedTimetables);
+    }
+    else {
+        var request = window.indexedDB.open(app.indexedDBName, 1);
+        request.onerror = function (event) {
+            console.log(event);
+        };
+        request.onupgradeneeded = function (event) {
+            var db = event.target.result;
+            var objectStore = db.createObjectStore("timetables", { keyPath: 'key' });
+        };
+        request.onsuccess = function (event) {
+            var db = event.target.result;
+            db.transaction("timetables").objectStore("timetables").getAll().onsuccess = function (event) {
+                console.log(event.target.result);
+                app.initStorage(event.target.result);
+            };
+        };
+    }
+
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').then(function () {
+            console.log("Service Worker Registered");
+        });
+    }
 })();
