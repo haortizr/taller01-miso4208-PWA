@@ -247,7 +247,7 @@
     }
 
     if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/service-worker.js').then(function () {
+        navigator.serviceWorker.register('app/sw.js').then(function () {
             console.log("Service Worker Registered");
         });
     }
